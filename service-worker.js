@@ -7,7 +7,7 @@ self.addEventListener("activate", e => e.waitUntil(self.clients.claim()));
 
 // Files served directly by the static host — never intercepted by the bridge.
 // SW_BASE is the directory this service-worker.js lives in (e.g. "/" or "/datasette-gh-pages/").
-const SW_BASE = self.location.pathname.replace(/sw\.js$/, "");
+const SW_BASE = self.location.pathname.replace(/[^/]+$/, ""); // e.g. "/datasette-gh-pages/"
 
 function isStatic(url) {
   const p = new URL(url).pathname;
