@@ -31,7 +31,8 @@
     #spinner { flex: 1; display: flex; align-items: center; justify-content: center; gap: 1rem; color: #888; }
     .dot { width: 32px; height: 32px; border: 3px solid #e0e7ff; border-top-color: #6366f1; border-radius: 50%; animation: spin .8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    iframe { flex: 1; border: none; width: 100%; display: none; }
+    iframe { flex: 1; border: none; width: 100%; }
+    iframe.hidden { display: none; }
   </style>
 </head>
 <body>
@@ -60,7 +61,7 @@
   </div>
   <div id="status">⏳ Starting…</div>
   <div id="spinner"><div class="dot"></div><span>Loading Pyodide…</span></div>
-  <iframe id="frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"></iframe>
+  <iframe id="frame" class="hidden" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"></iframe>
 </div>
 
 <script>
@@ -135,7 +136,7 @@
 
     document.getElementById("spinner").style.display = "none";
     const frame = document.getElementById("frame");
-    frame.style.display = "";
+    frame.classList.remove("hidden");
     frame.src = new URL("-/agent", location.href).href;
   }
 
