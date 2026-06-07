@@ -3,7 +3,6 @@
 // that the service worker intercepts from the page's iframe.
 //
 // THIS IS THE ONLY FILE YOU NEED TO EDIT to change:
-//   - which database to load
 //   - which Datasette plugins to use
 //   - the AI model or system prompt
 
@@ -45,6 +44,8 @@ async def start_datasette(db_url, aipipe_token):
         metadata={
             "plugins": {
                 "datasette-llm": {"default_model": "gpt-4o-mini"},
+                # Add a system prompt prefix to guide the AI agent:
+                # "datasette-agent": {"system_prompt_prefix": "You are an expert..."},
             }
         },
     )
@@ -92,15 +93,24 @@ self.addEventListener("message", (e) => {
 // ── Boot ───────────────────────────────────────────────────────────────────────
 startPyodideWorker({
   pyodideUrl: "https://cdn.jsdelivr.net/pyodide/v0.29.4/full/",
-  wheelManifest: "vendor/datasette.json",   // list of wheels to install via micropip
   installingMessage: "installing-datasette",
-  // Packages already compiled into Pyodide — loaded natively, no wheel needed
+
+  // Packages already compiled into Pyodide — loaded instantly, no PyPI download
   builtinPackages: [
     "pluggy", "pyyaml", "sqlite3", "markupsafe", "pydantic", "pydantic_core",
     "packaging", "click", "jinja2", "httpx", "anyio", "sniffio", "certifi",
     "openai", "cryptography", "python-dateutil",
   ],
-  // .py files fetched and executed before the inline Python above
+
+  // Pure-Python packages installed from PyPI via micropip
+  pypiPackages: [
+    "datasette",
+    "datasette-agent",
+    "datasette-llm",
+    "llm",
+  ],
+
+  // asgi-bridge.py is fetched and executed before the inline Python above
   pythonFiles: [new URL("asgi-bridge.py", self.location.href).href],
   pythonSources: [DATASETTE_PY, GLUE_PY],
   get pyGlobals() { return { _db_url: _cfg.dbUrl, _token: _cfg.token }; },

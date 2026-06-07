@@ -1,4 +1,5 @@
 // pyodide-boot.js — generic Pyodide Web Worker runtime.
+// Loads Pyodide and installs packages from CDN/PyPI at runtime.
 // Called by datasette-loader.js via startPyodideWorker(config).
 // You do not need to edit this file.
 
@@ -7,28 +8,28 @@ function startPyodideWorker(config) {
   let handleRequest = null;
 
   const initPromise = (async () => {
-    // 1. Boot Pyodide (Python/WASM runtime)
+    // 1. Boot Pyodide (Python/WASM runtime) from CDN
     importScripts(config.pyodideUrl + "pyodide.js");
     self.postMessage({ type: "status", message: "loading-pyodide" });
     const pyodide = await loadPyodide({ indexURL: config.pyodideUrl });
 
-    // 2. Load built-in Pyodide packages (already compiled, no wheel needed)
+    // 2. Load packages already bundled into Pyodide (fast, no network wheel download)
     self.postMessage({ type: "status", message: config.installingMessage || "installing" });
     await pyodide.loadPackage("micropip");
     if (config.builtinPackages?.length) {
       await pyodide.loadPackage(config.builtinPackages);
     }
 
-    // 3. Install vendored wheels via micropip (deps=False — deps loaded above)
-    const manifest = await (await fetch(new URL(config.wheelManifest, self.location.href))).json();
-    const vendorBase = new URL(config.wheelManifest, self.location.href).href.replace(/[^/]+$/, "");
-    pyodide.globals.set("_wheel_urls", pyodide.toPy(manifest.wheels.map(n => vendorBase + n)));
-    await pyodide.runPythonAsync(`
+    // 3. Install remaining packages from PyPI via micropip
+    if (config.pypiPackages?.length) {
+      pyodide.globals.set("_pypi_packages", pyodide.toPy(config.pypiPackages));
+      await pyodide.runPythonAsync(`
 import micropip
-await micropip.install(_wheel_urls, deps=False)
+await micropip.install(_pypi_packages)
 `);
+    }
 
-    // 4. Run Python source files and inline source blocks
+    // 4. Run Python source files (fetched by URL) then inline source blocks
     self.postMessage({ type: "status", message: "starting-app" });
     for (const url of (config.pythonFiles || [])) {
       await pyodide.runPythonAsync(await (await fetch(url)).text());
@@ -37,7 +38,7 @@ await micropip.install(_wheel_urls, deps=False)
       await pyodide.runPythonAsync(src);
     }
 
-    // 5. Inject JS-side config into Python globals, then call setup
+    // 5. Inject config into Python globals, then call the setup function
     for (const [key, val] of Object.entries(config.pyGlobals || {})) {
       pyodide.globals.set(key, val);
     }
