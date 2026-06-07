@@ -8,6 +8,92 @@
 
 importScripts("pyodide-boot.js");
 
+// ── ASGI bridge — translates browser fetch calls into Python ASGI ─────────────
+const ASGI_BRIDGE_PY = String.raw`
+import asyncio
+
+class ASGIBridge:
+    def __init__(self, app, root_path=""):
+        self.app = app
+        self.root_path = root_path
+
+    async def startup(self):
+        loop = asyncio.get_event_loop()
+        self._recv_queue = asyncio.Queue()
+        self._startup_complete = loop.create_future()
+        self._shutdown_complete = loop.create_future()
+        scope = {"type": "lifespan", "asgi": {"version": "3.0", "spec_version": "2.0"}}
+        await self._recv_queue.put({"type": "lifespan.startup"})
+
+        async def receive():
+            return await self._recv_queue.get()
+
+        async def send(message):
+            t = message["type"]
+            if t == "lifespan.startup.complete":
+                if not self._startup_complete.done():
+                    self._startup_complete.set_result(True)
+            elif t == "lifespan.startup.failed":
+                if not self._startup_complete.done():
+                    self._startup_complete.set_exception(
+                        RuntimeError(message.get("message", "lifespan startup failed")))
+            elif t == "lifespan.shutdown.complete":
+                if not self._shutdown_complete.done():
+                    self._shutdown_complete.set_result(True)
+
+        async def run():
+            try:
+                await self.app(scope, receive, send)
+            except Exception as exc:
+                if not self._startup_complete.done():
+                    self._startup_complete.set_exception(exc)
+                if not self._shutdown_complete.done():
+                    self._shutdown_complete.set_exception(exc)
+
+        asyncio.ensure_future(run())
+        await self._startup_complete
+
+    async def handle(self, method, path, query_string, headers, body=b"",
+                     scheme="http", host="localhost", port=80):
+        if isinstance(query_string, str): query_string = query_string.encode("latin-1")
+        if isinstance(body, str): body = body.encode("utf-8")
+        if body is None: body = b""
+
+        raw_headers = []
+        have_host = False
+        for name, value in headers:
+            name_bytes = name.lower().encode("latin-1")
+            if name_bytes == b"host": have_host = True
+            raw_headers.append((name_bytes, value.encode("latin-1")))
+        if not have_host:
+            h = host if int(port) in (80, 443) else f"{host}:{port}"
+            raw_headers.append((b"host", h.encode("latin-1")))
+
+        scope = {
+            "type": "http", "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1", "method": method.upper(),
+            "scheme": scheme, "path": path, "raw_path": path.encode("utf-8"),
+            "query_string": query_string, "root_path": self.root_path,
+            "headers": raw_headers, "server": (host, int(port)), "client": ("127.0.0.1", 0),
+        }
+
+        msgs = [{"type": "http.request", "body": body, "more_body": False}]
+        async def receive():
+            return msgs.pop(0) if msgs else {"type": "http.disconnect"}
+
+        resp = {"status": 500, "headers": [], "body": bytearray()}
+        async def send(message):
+            if message["type"] == "http.response.start":
+                resp["status"] = message["status"]
+                resp["headers"] = [[k.decode("latin-1"), v.decode("latin-1")]
+                                   for k, v in message.get("headers", [])]
+            elif message["type"] == "http.response.body":
+                resp["body"].extend(message.get("body", b"") or b"")
+
+        await self.app(scope, receive, send)
+        return {"status": resp["status"], "headers": resp["headers"], "body": bytes(resp["body"])}
+`;
+
 // ── Python: start Datasette from a remote .db URL ─────────────────────────────
 const DATASETTE_PY = String.raw`
 import os
@@ -43,7 +129,7 @@ async def start_datasette(db_url, aipipe_token):
         metadata={
             "plugins": {
                 "datasette-llm": {"default_model": "gpt-4o-mini"},
-                # Uncomment to add a system prompt for the AI agent:
+                # Uncomment to guide the AI agent:
                 # "datasette-agent": {"system_prompt_prefix": "You are an expert on this dataset..."},
             }
         },
@@ -100,13 +186,10 @@ startPyodideWorker({
     "openai", "cryptography", "python-dateutil",
   ],
 
-  // Pre-vetted pure-Python wheels compatible with Pyodide.
-  // Hosted alongside the live TDS scores deployment.
+  // Pre-vetted pure-Python wheels, compatible with Pyodide
   wheelManifestUrl: "https://tds-scores.pages.dev/vendor/datasette.json",
 
-  // asgi-bridge.py is fetched and run before the inline Python above
-  pythonFiles: [new URL("asgi-bridge.py", self.location.href).href],
-  pythonSources: [DATASETTE_PY, GLUE_PY],
+  pythonSources: [ASGI_BRIDGE_PY, DATASETTE_PY, GLUE_PY],
   get pyGlobals() { return { _db_url: _cfg.dbUrl, _token: _cfg.token }; },
   setupExpr: "await setup(_db_url, _token)",
 });
