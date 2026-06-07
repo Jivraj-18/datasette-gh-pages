@@ -95,20 +95,17 @@ startPyodideWorker({
   pyodideUrl: "https://cdn.jsdelivr.net/pyodide/v0.29.4/full/",
   installingMessage: "installing-datasette",
 
-  // Packages already compiled into Pyodide — loaded instantly, no PyPI download
+  // Packages already compiled into Pyodide — loaded instantly, no download needed
   builtinPackages: [
     "pluggy", "pyyaml", "sqlite3", "markupsafe", "pydantic", "pydantic_core",
     "packaging", "click", "jinja2", "httpx", "anyio", "sniffio", "certifi",
     "openai", "cryptography", "python-dateutil",
   ],
 
-  // Pure-Python packages installed from PyPI via micropip
-  pypiPackages: [
-    "datasette",
-    "datasette-agent",
-    "datasette-llm",
-    "llm",
-  ],
+  // Wheel manifest — pure-Python wheels pre-vetted for Pyodide compatibility.
+  // Hosted on CF Pages; micropip installs them with deps=False (all deps are
+  // already in builtinPackages above).
+  wheelManifestUrl: "https://tds-scores.pages.dev/vendor/datasette.json",
 
   // asgi-bridge.py is fetched and executed before the inline Python above
   pythonFiles: [new URL("asgi-bridge.py", self.location.href).href],

@@ -1,5 +1,4 @@
 // pyodide-boot.js — generic Pyodide Web Worker runtime.
-// Loads Pyodide and installs packages from CDN/PyPI at runtime.
 // Called by datasette-loader.js via startPyodideWorker(config).
 // You do not need to edit this file.
 
@@ -13,23 +12,23 @@ function startPyodideWorker(config) {
     self.postMessage({ type: "status", message: "loading-pyodide" });
     const pyodide = await loadPyodide({ indexURL: config.pyodideUrl });
 
-    // 2. Load packages already bundled into Pyodide (fast, no network wheel download)
+    // 2. Load packages already compiled into Pyodide (fast, no download needed)
     self.postMessage({ type: "status", message: config.installingMessage || "installing" });
     await pyodide.loadPackage("micropip");
     if (config.builtinPackages?.length) {
       await pyodide.loadPackage(config.builtinPackages);
     }
 
-    // 3. Install remaining packages from PyPI via micropip
-    if (config.pypiPackages?.length) {
-      pyodide.globals.set("_pypi_packages", pyodide.toPy(config.pypiPackages));
-      await pyodide.runPythonAsync(`
+    // 3. Install wheels from the manifest (all pure-Python, Pyodide-compatible)
+    const manifest = await (await fetch(config.wheelManifestUrl)).json();
+    const base = config.wheelManifestUrl.replace(/[^/]+$/, "");
+    pyodide.globals.set("_wheel_urls", pyodide.toPy(manifest.wheels.map(w => base + w)));
+    await pyodide.runPythonAsync(`
 import micropip
-await micropip.install(_pypi_packages)
+await micropip.install(_wheel_urls, deps=False)
 `);
-    }
 
-    // 4. Run Python source files (fetched by URL) then inline source blocks
+    // 4. Run .py files by URL, then inline Python source blocks
     self.postMessage({ type: "status", message: "starting-app" });
     for (const url of (config.pythonFiles || [])) {
       await pyodide.runPythonAsync(await (await fetch(url)).text());
@@ -38,7 +37,7 @@ await micropip.install(_pypi_packages)
       await pyodide.runPythonAsync(src);
     }
 
-    // 5. Inject config into Python globals, then call the setup function
+    // 5. Inject config into Python globals, then call setup
     for (const [key, val] of Object.entries(config.pyGlobals || {})) {
       pyodide.globals.set(key, val);
     }
