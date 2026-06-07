@@ -100,7 +100,7 @@ import os
 from datasette.app import Datasette
 from js import fetch as jsfetch
 
-async def start_datasette(db_url, aipipe_token, base_url="/"):
+async def start_datasette(db_url, aipipe_token):
     os.environ["OPENAI_API_KEY"] = aipipe_token
     os.environ["OPENAI_BASE_URL"] = "https://aipipe.org/openai/v1"
 
@@ -124,7 +124,7 @@ async def start_datasette(db_url, aipipe_token, base_url="/"):
 
     ds = Datasette(
         files=["/tmp/data.db"],
-        settings={"base_url": _base_url, "num_sql_threads": 0},
+        settings={"base_url": "/", "num_sql_threads": 0},
         default_deny=False,
         metadata={
             "plugins": {
@@ -154,9 +154,9 @@ from pyodide.ffi import to_js
 
 bridge = None
 
-async def setup(db_url, aipipe_token, base_url="/"):
+async def setup(db_url, aipipe_token):
     global bridge
-    app = await start_datasette(db_url, aipipe_token, base_url)
+    app = await start_datasette(db_url, aipipe_token)
     bridge = ASGIBridge(app, root_path="")
     await bridge.startup()
 
@@ -190,6 +190,6 @@ startPyodideWorker({
   wheelManifestUrl: "https://tds-scores.pages.dev/vendor/datasette.json",
 
   pythonSources: [ASGI_BRIDGE_PY, DATASETTE_PY, GLUE_PY],
-  get pyGlobals() { return { _db_url: _cfg.dbUrl, _token: _cfg.token, _base_url: _cfg.baseUrl }; },
-  setupExpr: "await setup(_db_url, _token, _base_url)",
+  get pyGlobals() { return { _db_url: _cfg.dbUrl, _token: _cfg.token }; },
+  setupExpr: "await setup(_db_url, _token)",
 });

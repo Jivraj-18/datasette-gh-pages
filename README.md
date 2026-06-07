@@ -1,119 +1,102 @@
 # Datasette Agent on GitHub Pages
 
-Run [Datasette](https://datasette.io) + an AI agent **entirely in the browser** — no server, no setup, free hosting on GitHub Pages.
+Run [Datasette](https://datasette.io) + AI agent **entirely in the browser** — no server, free hosting.
 
-Point it at any public SQLite database and chat with it using natural language. Everything runs locally in the user's browser via [Pyodide](https://pyodide.org) (Python compiled to WebAssembly). Python packages are installed from PyPI at runtime — nothing to pre-build or commit.
+Point it at any public SQLite `.db` file and chat with the data in plain English. Powered by [Pyodide](https://pyodide.org) (Python/WASM) + [aipipe.org](https://aipipe.org).
 
 **Live demo:** `https://jivraj-18.github.io/datasette-gh-pages/`
+
+---
+
+## Deploy
+
+1. Fork this repo
+2. **Settings → Pages → Deploy from branch → `main` / `(root)`**
+3. Done — live at `https://<you>.github.io/datasette-gh-pages/`
+
+No build step. No setup script.
+
+---
+
+## Usage
+
+Open the site, enter:
+- **SQLite URL** — any public `.db` file (default: `https://datasette.io/content.db`)
+- **Aipipe token** — free at [aipipe.org/login](https://aipipe.org/login) (Google sign-in)
+
+First load: ~30–60s (downloads ~20MB of Python packages, cached after that).
+
+---
+
+## Files
+
+| File | Purpose | Edit? |
+|---|---|---|
+| `datasette-loader.js` | Boots Datasette + configures plugins/model | **Yes — only file you touch** |
+| `index.html` | Login form, default DB URL | Only for default DB URL |
+| `service-worker.js` | Routes iframe fetches to Pyodide | No |
+| `pyodide-boot.js` | Generic Pyodide loader | No |
+
+---
+
+## Configuration (`datasette-loader.js`)
+
+### AI model
+```python
+"datasette-llm": {"default_model": "gpt-4o-mini"}
+```
+Options on aipipe.org: `gpt-4o` (better tool use), `gemini-2.0-flash` (faster), `claude-3-5-haiku`.  
+Switch to `gpt-4o` if the agent answers from general knowledge instead of querying the DB.
+
+### System prompt
+```python
+"datasette-agent": {
+    "system_prompt_prefix": "This DB contains sales data. Column 'amt' is in USD."
+}
+```
+Tell the agent what the data means. Reduces hallucination. Use when the agent asks questions it should already know.
+
+### Default database URL
+In `index.html`:
+```html
+<input id="db-url" type="url" value="https://your-host.com/data.db">
+```
+Must be a direct `.db` URL with CORS enabled (`Access-Control-Allow-Origin: *`). GitHub Pages, S3, and most CDNs work.
+
+### `num_sql_threads: 0`
+**Do not change.** Pyodide is single-threaded (WebAssembly). Setting this to anything other than `0` will crash the worker.
+
+### `default_deny=False` + `_skip_permission_checks`
+**Do not change.** This is a single-user browser app — the user is implicitly trusted after entering their token. Removing these causes 403 errors on all Datasette routes.
+
+### `wheelManifestUrl`
+```js
+wheelManifestUrl: "https://tds-scores.pages.dev/vendor/datasette.json"
+```
+Points to a pre-vetted list of pure-Python wheels compatible with Pyodide. micropip cannot install compiled wheels from PyPI — this manifest contains the already-filtered set. Change only if you need to add a private plugin (host your own `vendor/` folder and point here).
 
 ---
 
 ## How it works
 
 ```
-index.html  (you open this in a browser)
-   │
-   ├── registers service-worker.js
-   │     └── intercepts all /-/* requests from the Datasette iframe
-   │
-   ├── starts datasette-loader.js in a background thread
-   │     ├── loads Python/WASM runtime (Pyodide) from CDN
-   │     ├── installs datasette + datasette-agent from PyPI
-   │     ├── downloads your .db file
-   │     └── runs Datasette inside Python
-   │
-   └── loads /-/agent in an iframe
-         └── every fetch → service worker → Python → response
+Browser
+├── service-worker.js   intercepts /-/* fetches, strips subpath prefix
+├── datasette-loader.js Python/WASM worker: boots Datasette, handles ASGI
+└── index.html          shell: brokers messages between SW ↔ worker
 ```
 
-First load: ~30–60s (downloads ~20MB of Python packages). Cached after that.
-
----
-
-## Files
-
-| File | Role | Edit? |
-|---|---|---|
-| `index.html` | Login form + browser bootstrap | Only to change the default DB URL |
-| `service-worker.js` | Intercepts Datasette requests, routes to Python | No |
-| `datasette-loader.js` | Starts Datasette in Python/WASM | **Yes — your app config lives here** |
-| `pyodide-boot.js` | Generic Pyodide loader (not specific to Datasette) | No |
-| `asgi-bridge.py` | Translates browser fetches into Python ASGI calls | No |
-
-**You only edit `datasette-loader.js`** to change the database, model, plugins, or system prompt.
-
----
-
-## Deploy
-
-### 1. Fork or clone
-
-```bash
-git clone https://github.com/Jivraj-18/datasette-gh-pages
 ```
-
-No setup, no build step. The repo is ready to deploy as-is.
-
-### 2. Enable GitHub Pages
-
-In your repo: **Settings → Pages → Source → Deploy from branch → `main` / `(root)`**
-
-Your site is live at `https://<you>.github.io/datasette-gh-pages/` in ~1 minute.
-
----
-
-## Usage
-
-Open the site and enter:
-
-- **SQLite database URL** — any publicly accessible `.db` file (default: `https://datasette.io/content.db`)
-- **Aipipe token** — free LLM proxy token from [aipipe.org/login](https://aipipe.org/login) (Google sign-in)
-
-The AI agent opens at `/-/agent`. Ask questions about the data in plain English.
-
----
-
-## Customise
-
-### Change the default database
-
-In `index.html`, update the `value` of the database URL input:
-```html
-<input id="db-url" type="url" value="https://your-host.com/your-data.db">
-```
-
-### Change the AI model
-
-In `datasette-loader.js`, find `"default_model"` and change it:
-```python
-"datasette-llm": {"default_model": "gpt-4o"}   # or gemini-2.0-flash, claude-3-5-haiku, …
-```
-
-### Add a system prompt
-
-In `datasette-loader.js`, add to the metadata:
-```python
-"datasette-agent": {
-    "system_prompt_prefix": "You are an expert analyst. Always show your SQL queries."
-}
-```
-
-### Add a Datasette plugin
-
-In `datasette-loader.js`, add the package name to `pypiPackages`:
-```js
-pypiPackages: [
-  "datasette",
-  "datasette-agent",
-  "datasette-llm",
-  "llm",
-  "your-plugin-name",   // ← add here
-],
+User asks question
+→ iframe fetch (/-/agent/stream)
+→ service-worker intercepts → forwards to index.html
+→ index.html → datasette-loader.js (Pyodide/Python)
+→ Datasette → datasette-agent → sql_query tool
+→ aipipe.org → LLM → SSE stream back to iframe
 ```
 
 ---
 
 ## Credits
 
-- Architecture by [Simon Willison — pyodide-asgi-browser](https://github.com/simonw/research/tree/main/pyodide-asgi-browser)
-- [Datasette](https://datasette.io) · [datasette-agent](https://github.com/datasette/datasette-agent) · [Pyodide](https://pyodide.org) · [aipipe.org](https://aipipe.org)
+Architecture by [Simon Willison — pyodide-asgi-browser](https://github.com/simonw/research/tree/main/pyodide-asgi-browser) · [Datasette](https://datasette.io) · [datasette-agent](https://github.com/datasette/datasette-agent) · [Pyodide](https://pyodide.org)

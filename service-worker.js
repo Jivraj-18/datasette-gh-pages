@@ -51,8 +51,14 @@ async function handleRequest(request) {
   const channel = new MessageChannel();
   const reply = new Promise(resolve => { channel.port1.onmessage = e => resolve(e.data); });
 
+  // Rewrite URL: strip SW_BASE prefix so Datasette sees "/" as root.
+  // e.g. /datasette-gh-pages/-/agent → /-/agent
+  const origUrl = new URL(request.url);
+  origUrl.pathname = "/" + origUrl.pathname.slice(SW_BASE.length);
+  const rewrittenUrl = origUrl.href;
+
   shell.postMessage(
-    { type: "asgi-request", request: { method: request.method, url: request.url, headers, body } },
+    { type: "asgi-request", request: { method: request.method, url: rewrittenUrl, headers, body } },
     [channel.port2]
   );
 

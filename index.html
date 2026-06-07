@@ -127,8 +127,7 @@
     };
 
     worker.postMessage({ type: "init", port: ch.port2 }, [ch.port2]);
-    const baseUrl = location.pathname.replace(/[^/]+$/, "") || "/";
-    worker.postMessage({ type: "app-config", dbUrl, token, baseUrl });
+    worker.postMessage({ type: "app-config", dbUrl, token });
 
     await ready;
     setStatus("ready");
