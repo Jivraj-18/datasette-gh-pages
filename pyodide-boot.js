@@ -1,35 +1,34 @@
-// pyodide-boot.js — generic Pyodide Web Worker runtime.
+// pyodide-boot.js — Pyodide Web Worker runtime. Do not edit.
 // Called by datasette-loader.js via startPyodideWorker(config).
-// You do not need to edit this file.
 
 function startPyodideWorker(config) {
   let bridgePort = null;
   let handleRequest = null;
 
   const initPromise = (async () => {
-    // 1. Boot Pyodide (Python/WASM runtime) from CDN
-    importScripts(config.pyodideUrl + "pyodide.js");
+    importScripts("https://cdn.jsdelivr.net/pyodide/v0.29.4/full/pyodide.js");
     self.postMessage({ type: "status", message: "loading-pyodide" });
-    const pyodide = await loadPyodide({ indexURL: config.pyodideUrl });
+    const pyodide = await loadPyodide({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.29.4/full/" });
 
-    // 2. Load packages already compiled into Pyodide (fast, no download needed)
     self.postMessage({ type: "status", message: config.installingMessage || "installing" });
     await pyodide.loadPackage("micropip");
-    if (config.builtinPackages?.length) {
-      await pyodide.loadPackage(config.builtinPackages);
+
+    if (config.loadPackages?.length) {
+      await pyodide.loadPackage(config.loadPackages);
     }
 
-    // 3. Install wheels from the manifest (all pure-Python, Pyodide-compatible)
+    // Fetch wheel manifest and install all wheels from the given base URL
     const manifest = await (await fetch(config.wheelManifestUrl)).json();
     const base = config.wheelManifestUrl.replace(/[^/]+$/, "");
-    pyodide.globals.set("_wheel_urls", pyodide.toPy(manifest.wheels.map(w => base + w)));
+    pyodide.globals.set("_wheel_urls", pyodide.toPy(manifest.wheels.map(n => base + n)));
     await pyodide.runPythonAsync(`
 import micropip
 await micropip.install(_wheel_urls, deps=False)
 `);
 
-    // 4. Run .py files by URL, then inline Python source blocks
     self.postMessage({ type: "status", message: "starting-app" });
+
+    // Fetch and run any .py files, then run inline Python source strings
     for (const url of (config.pythonFiles || [])) {
       await pyodide.runPythonAsync(await (await fetch(url)).text());
     }
@@ -37,12 +36,11 @@ await micropip.install(_wheel_urls, deps=False)
       await pyodide.runPythonAsync(src);
     }
 
-    // 5. Inject config into Python globals, then call setup
+    // Inject JS-side values into Python globals, then call setup
     for (const [key, val] of Object.entries(config.pyGlobals || {})) {
       pyodide.globals.set(key, val);
     }
     await pyodide.runPythonAsync(config.setupExpr);
-
     handleRequest = pyodide.globals.get("handle_request");
     self.postMessage({ type: "ready" });
   })().catch(err => {
@@ -69,7 +67,7 @@ await micropip.install(_wheel_urls, deps=False)
         [body.buffer],
       );
     } catch (err) {
-      const body = new TextEncoder().encode("Error: " + (err?.message ?? err));
+      const body = new TextEncoder().encode("ASGI bridge error: " + (err?.message ?? err));
       bridgePort.postMessage(
         { type: "response", id: msg.id, status: 500, headers: [["content-type", "text/plain"]], body: body.buffer },
         [body.buffer],
