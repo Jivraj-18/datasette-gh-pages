@@ -1,21 +1,19 @@
 // Service worker — routes Datasette/ASGI requests to the Pyodide Web Worker.
 // Static files (the shell page + JS assets) pass through to the network.
-// v2
+// v3
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", e => e.waitUntil(self.clients.claim()));
 
-// Files served directly by the static host — never intercepted by the bridge.
-// SW_BASE is the directory this service-worker.js lives in (e.g. "/" or "/datasette-gh-pages/").
-const SW_BASE = self.location.pathname.replace(/[^/]+$/, ""); // e.g. "/datasette-gh-pages/"
+// SW_BASE = directory containing this file, e.g. "/datasette-gh-pages/"
+const SW_BASE = self.location.pathname.replace(/[^/]+$/, "");
 
 function isStatic(url) {
   const p = new URL(url).pathname;
-  // The shell page itself
   if (p === SW_BASE || p === SW_BASE + "index.html") return true;
-  // All JS/runtime assets next to index.html
-  if (p.startsWith(SW_BASE) && !p.replace(SW_BASE, "").startsWith("-/")) {
+  if (p.startsWith(SW_BASE)) {
     const rest = p.slice(SW_BASE.length);
+    // Static: top-level files (js, css, py) and vendor/ folder
     if (!rest.includes("/") || rest.startsWith("vendor/")) return true;
   }
   return false;
@@ -30,12 +28,10 @@ self.addEventListener("fetch", event => {
 
 async function findShellClient() {
   const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  // Shell is the page at SW_BASE (the index.html). Datasette pages are at /-/…
   return (
     windows.find(w => new URL(w.url).pathname === SW_BASE) ||
     windows.find(w => new URL(w.url).pathname === SW_BASE + "index.html") ||
-    windows[0] ||
-    null
+    windows[0] || null
   );
 }
 
@@ -51,18 +47,13 @@ async function handleRequest(request) {
   const channel = new MessageChannel();
   const reply = new Promise(resolve => { channel.port1.onmessage = e => resolve(e.data); });
 
-  // Rewrite URL: strip SW_BASE prefix so Datasette sees "/" as root.
-  // e.g. /datasette-gh-pages/-/agent → /-/agent
-  const origUrl = new URL(request.url);
-  origUrl.pathname = "/" + origUrl.pathname.slice(SW_BASE.length);
-  const rewrittenUrl = origUrl.href;
-
+  // Pass the full URL as-is — Datasette is configured with base_url=SW_BASE
+  // so it expects and generates paths prefixed with SW_BASE.
   shell.postMessage(
-    { type: "asgi-request", request: { method: request.method, url: rewrittenUrl, headers, body } },
+    { type: "asgi-request", request: { method: request.method, url: request.url, headers, body } },
     [channel.port2]
   );
 
-  // 5-minute timeout covers long LLM streaming responses
   const timeout = new Promise((_, reject) =>
     setTimeout(() => reject(new Error("bridge timeout")), 300_000)
   );

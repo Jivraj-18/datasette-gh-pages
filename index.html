@@ -61,7 +61,7 @@
   </div>
   <div id="status">⏳ Starting…</div>
   <div id="spinner"><div class="dot"></div><span>Loading Pyodide…</span></div>
-  <iframe id="frame" class="hidden" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"></iframe>
+  <iframe id="frame" class="hidden" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-top-navigation-by-user-activation"></iframe>
 </div>
 
 <script>
@@ -127,7 +127,9 @@
     };
 
     worker.postMessage({ type: "init", port: ch.port2 }, [ch.port2]);
-    worker.postMessage({ type: "app-config", dbUrl, token });
+    // base_url = the subpath this page lives at, e.g. "/datasette-gh-pages/"
+    const baseUrl = location.pathname.replace(/[^/]*$/, "") || "/";
+    worker.postMessage({ type: "app-config", dbUrl, token, baseUrl });
 
     await ready;
     setStatus("ready");
