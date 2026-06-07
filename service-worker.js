@@ -1,5 +1,6 @@
 // Service worker — routes Datasette/ASGI requests to the Pyodide Web Worker.
 // Static files (the shell page + JS assets) pass through to the network.
+// v2
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", e => e.waitUntil(self.clients.claim()));
