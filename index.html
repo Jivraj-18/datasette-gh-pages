@@ -103,7 +103,7 @@
     await navigator.serviceWorker.register("/sw.js");
     await navigator.serviceWorker.ready;
 
-    const worker = new Worker("worker-app.js");
+    const worker = new Worker("worker.js");
 
     const ready = new Promise((resolve, reject) => {
       worker.onmessage = e => {

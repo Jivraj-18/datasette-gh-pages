@@ -1,29 +1,29 @@
-// Pyodide Web Worker — runs Datasette + datasette-agent entirely in the browser.
-// Receives {type:"app-config", dbUrl, token} before the "init" message.
+// worker.js — Pyodide Web Worker
+// This is the only file you edit to change app behaviour.
+//
+// Receives {type:"app-config", dbUrl, token} then {type:"init", port}
+// from index.html before handling any requests.
 
-const PYODIDE_URL = "https://cdn.jsdelivr.net/pyodide/v0.29.4/full/";
+importScripts("pyodide-runtime.js");
 
-importScripts("bridge-python.js");
-
-// ── Python: boot Datasette from a remote .db URL ──────────────────────────
+// ── Python: your Datasette app ────────────────────────────────────────────────
 const APP_PY = String.raw`
 import os
 from datasette.app import Datasette
 from js import fetch as jsfetch
 
 async def build_app(db_url, aipipe_token):
-    # Configure the OpenAI-compatible LLM proxy
     os.environ["OPENAI_API_KEY"] = aipipe_token
     os.environ["OPENAI_BASE_URL"] = "https://aipipe.org/openai/v1"
 
-    # Pyodide returns memoryview chunks from httpx streaming; coerce to bytes.
+    # Pyodide compat: httpx streaming returns memoryview; coerce to bytes.
     import openai._streaming as _s
     _orig = _s.SSEDecoder.aiter_bytes
     async def _patched(self, it):
-        async def _coerce(it):
+        async def coerce(it):
             async for c in it:
                 yield bytes(c) if isinstance(c, memoryview) else c
-        async for sse in _orig(self, _coerce(it)):
+        async for sse in _orig(self, coerce(it)):
             yield sse
     _s.SSEDecoder.aiter_bytes = _patched
 
@@ -32,7 +32,6 @@ async def build_app(db_url, aipipe_token):
     data = (await resp.arrayBuffer()).to_py().tobytes()
     with open("/tmp/data.db", "wb") as f:
         f.write(data)
-    print(f"[app] loaded {len(data):,} byte db from {db_url}")
 
     ds = Datasette(
         files=["/tmp/data.db"],
@@ -42,7 +41,7 @@ async def build_app(db_url, aipipe_token):
     )
     ds.root_enabled = True
 
-    # Wrap app to skip permission checks — single-user browser session
+    # Skip permission checks — single-user browser session
     from datasette.permissions import _skip_permission_checks
     raw = ds.app()
     async def app(scope, receive, send):
@@ -52,7 +51,7 @@ async def build_app(db_url, aipipe_token):
     return app
 `;
 
-// ── Python: bridge glue ────────────────────────────────────────────────────
+// ── Python: bridge glue (connects ASGIBridge from bridge.py to the runtime) ──
 const GLUE_PY = String.raw`
 import json
 from js import Object
@@ -65,7 +64,6 @@ async def setup(db_url, aipipe_token):
     app = await build_app(db_url, aipipe_token)
     bridge = ASGIBridge(app, root_path="")
     await bridge.startup()
-    print("[setup] ready")
 
 async def handle_request(method, path, query, headers_json, body_buf, scheme, host, port):
     headers = json.loads(headers_json)
@@ -76,24 +74,25 @@ async def handle_request(method, path, query, headers_json, body_buf, scheme, ho
                  dict_converter=Object.fromEntries)
 `;
 
-importScripts("worker-runtime.js");
-
-// Capture config sent before "init" (addEventListener stacks; onmessage would be overwritten)
+// ── Config from index.html ─────────────────────────────────────────────────────
+// addEventListener stacks on top of the runtime's onmessage, so config arrives safely.
 let _cfg = { dbUrl: "", token: "" };
 self.addEventListener("message", (e) => {
   if (e.data?.type === "app-config") _cfg = e.data;
 });
 
+// ── Start ──────────────────────────────────────────────────────────────────────
 startAsgiWorker({
-  pyodideUrl: PYODIDE_URL,
-  installManifest: "datasette.json",
+  pyodideUrl: "https://cdn.jsdelivr.net/pyodide/v0.29.4/full/",
+  installManifest: "datasette.json",        // vendor/datasette.json — wheel list
   installingMessage: "installing-datasette",
-  loadPackages: [
+  loadPackages: [                            // Pyodide-bundled packages (no wheel needed)
     "pluggy", "pyyaml", "sqlite3", "markupsafe", "pydantic", "pydantic_core",
     "packaging", "click", "jinja2", "httpx", "anyio", "sniffio", "certifi",
     "openai", "cryptography", "python-dateutil",
   ],
-  pythonSources: [ASGI_BRIDGE_PY, APP_PY, GLUE_PY],
+  pythonFiles: [new URL("bridge.py", self.location.href).href],  // ASGI bridge
+  pythonSources: [APP_PY, GLUE_PY],
   get pyGlobals() { return { _db_url: _cfg.dbUrl, _token: _cfg.token }; },
   setupExpr: "await setup(_db_url, _token)",
 });

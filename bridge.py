@@ -1,5 +1,4 @@
-// ASGI bridge — shared Python code embedded as a string for the Pyodide worker
-const ASGI_BRIDGE_PY = String.raw`
+
 import asyncio
 
 
@@ -112,4 +111,4 @@ class ASGIBridge:
             "headers": response["headers"],
             "body": bytes(response["body"]),
         }
-`;
+

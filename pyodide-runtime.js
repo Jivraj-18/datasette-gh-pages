@@ -26,8 +26,14 @@ await micropip.install(_wheel_urls, deps=False)
 
     self.postMessage({ type: "status", message: "starting-app" });
 
-    // Run all python source blocks
-    for (const src of config.pythonSources) {
+    // Fetch and run any .py files by URL (loaded before inline pythonSources)
+    for (const url of (config.pythonFiles || [])) {
+      const src = await (await fetch(url)).text();
+      await pyodide.runPythonAsync(src);
+    }
+
+    // Run inline python source blocks
+    for (const src of (config.pythonSources || [])) {
       await pyodide.runPythonAsync(src);
     }
 
