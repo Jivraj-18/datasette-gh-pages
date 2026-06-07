@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Datasette — Browser Edition</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f5f5f5; min-height: 100vh; }
+
+    /* Login */
+    #login { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1.5rem; }
+    .card { background: #fff; border-radius: 12px; padding: 2rem; width: 100%; max-width: 420px; box-shadow: 0 2px 12px rgba(0,0,0,.1); }
+    .card h1 { font-size: 1.25rem; margin-bottom: .25rem; }
+    .card p  { font-size: .85rem; color: #666; margin-bottom: 1.5rem; line-height: 1.5; }
+    label { display: block; font-size: .8rem; font-weight: 600; margin-bottom: .3rem; }
+    input { width: 100%; padding: .55rem .8rem; border: 1.5px solid #ddd; border-radius: 8px; font-size: .9rem; margin-bottom: 1rem; }
+    input:focus { outline: none; border-color: #6366f1; }
+    .hint { font-size: .75rem; color: #888; margin-top: -.7rem; margin-bottom: 1rem; }
+    button { width: 100%; padding: .65rem; background: #6366f1; color: #fff; border: none; border-radius: 8px; font-size: .95rem; font-weight: 600; cursor: pointer; }
+    button:disabled { background: #a5b4fc; cursor: default; }
+
+    /* App */
+    #app { display: none; flex-direction: column; height: 100vh; }
+    .bar { background: #6366f1; color: #fff; padding: .5rem 1rem; font-size: .85rem; display: flex; align-items: center; gap: .5rem; flex-shrink: 0; }
+    .bar strong { flex: 1; }
+    .bar button { width: auto; padding: .25rem .65rem; background: rgba(255,255,255,.2); font-size: .78rem; border-radius: 6px; }
+    #status { padding: .3rem 1rem; font-size: .78rem; text-align: center; background: #eef2ff; color: #4338ca; flex-shrink: 0; }
+    #status.err { background: #fee2e2; color: #b91c1c; }
+    #status.hide { display: none; }
+    #spinner { flex: 1; display: flex; align-items: center; justify-content: center; gap: 1rem; color: #888; }
+    .dot { width: 32px; height: 32px; border: 3px solid #e0e7ff; border-top-color: #6366f1; border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    iframe { flex: 1; border: none; width: 100%; display: none; }
+  </style>
+</head>
+<body>
+
+<div id="login">
+  <div class="card">
+    <h1>Datasette — Browser Edition</h1>
+    <p>Runs Datasette + an AI agent entirely in your browser via Pyodide. No server needed.</p>
+
+    <label>SQLite database URL</label>
+    <input id="db-url" type="url" value="https://datasette.io/content.db" placeholder="https://example.com/data.db">
+
+    <label>Aipipe token</label>
+    <input id="token" type="password" placeholder="Your aipipe.org token">
+    <p class="hint">Get a free token at <a href="https://aipipe.org/login" target="_blank">aipipe.org/login</a></p>
+
+    <button id="go">Open in browser →</button>
+  </div>
+</div>
+
+<div id="app">
+  <div class="bar">
+    <strong>Datasette</strong>
+    <span id="db-label"></span>
+    <button onclick="location.reload()">Reset</button>
+  </div>
+  <div id="status">⏳ Starting…</div>
+  <div id="spinner"><div class="dot"></div><span>Loading Pyodide…</span></div>
+  <iframe id="frame" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"></iframe>
+</div>
+
+<script>
+  // Shell: registers SW, starts Pyodide worker, brokers SW ↔ worker messages.
+
+  const STATUS = {
+    "loading-pyodide":      "⏳ Loading Python runtime…",
+    "installing-datasette": "📦 Installing Datasette (~30s first time)…",
+    "starting-app":         "🚀 Starting Datasette…",
+    "ready":                "✅ Ready",
+  };
+
+  const statusEl = document.getElementById("status");
+  function setStatus(msg) {
+    statusEl.textContent = STATUS[msg] || msg;
+    statusEl.className = msg.startsWith("error") ? "err" : "";
+    if (msg === "ready") setTimeout(() => statusEl.classList.add("hide"), 1500);
+  }
+
+  let workerPort = null;
+  const pending = new Map();
+
+  function callWorker(req) {
+    const id = crypto.randomUUID();
+    return new Promise(resolve => {
+      pending.set(id, resolve);
+      workerPort.postMessage({ type: "request", id, ...req }, req.body ? [req.body] : []);
+    });
+  }
+
+  navigator.serviceWorker.addEventListener("message", e => {
+    if (e.data?.type !== "asgi-request") return;
+    callWorker(e.data.request).then(resp =>
+      e.ports[0].postMessage({ status: resp.status, headers: resp.headers, body: resp.body },
+                              resp.body ? [resp.body] : [])
+    );
+  });
+
+  async function startApp(dbUrl, token) {
+    await navigator.serviceWorker.register("/sw.js");
+    await navigator.serviceWorker.ready;
+
+    const worker = new Worker("worker-app.js");
+
+    const ready = new Promise((resolve, reject) => {
+      worker.onmessage = e => {
+        const d = e.data || {};
+        if (d.type === "ready")  resolve();
+        if (d.type === "status") setStatus(d.message);
+        if (d.type === "error")  { setStatus("error: " + d.message); reject(new Error(d.message)); }
+      };
+    });
+
+    const ch = new MessageChannel();
+    workerPort = ch.port1;
+    workerPort.onmessage = e => {
+      if (e.data?.type === "response") {
+        const res = pending.get(e.data.id);
+        if (res) { pending.delete(e.data.id); res(e.data); }
+      }
+    };
+
+    worker.postMessage({ type: "init", port: ch.port2 }, [ch.port2]);
+    worker.postMessage({ type: "app-config", dbUrl, token });
+
+    await ready;
+    setStatus("ready");
+    await new Promise(r => setTimeout(r, 100));
+
+    document.getElementById("spinner").style.display = "none";
+    const frame = document.getElementById("frame");
+    frame.style.display = "";
+    frame.src = "/-/agent";
+  }
+
+  document.getElementById("go").addEventListener("click", () => {
+    const dbUrl = document.getElementById("db-url").value.trim();
+    const token = document.getElementById("token").value.trim();
+    if (!dbUrl || !token) return;
+
+    document.getElementById("login").style.display = "none";
+    document.getElementById("app").style.display = "flex";
+    document.getElementById("db-label").textContent = new URL(dbUrl).pathname.split("/").pop();
+
+    startApp(dbUrl, token).catch(err => setStatus("error: " + err.message));
+  });
+</script>
+</body>
+</html>
