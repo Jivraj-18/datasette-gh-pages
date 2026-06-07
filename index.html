@@ -126,7 +126,8 @@
     };
 
     worker.postMessage({ type: "init", port: ch.port2 }, [ch.port2]);
-    worker.postMessage({ type: "app-config", dbUrl, token });
+    const baseUrl = location.pathname.replace(/[^/]+$/, "") || "/";
+    worker.postMessage({ type: "app-config", dbUrl, token, baseUrl });
 
     await ready;
     setStatus("ready");
@@ -135,7 +136,7 @@
     document.getElementById("spinner").style.display = "none";
     const frame = document.getElementById("frame");
     frame.style.display = "";
-    frame.src = "/-/agent";
+    frame.src = new URL("-/agent", location.href).href;
   }
 
   document.getElementById("go").addEventListener("click", () => {
