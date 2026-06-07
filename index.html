@@ -100,10 +100,12 @@
   });
 
   async function startApp(dbUrl, token) {
-    await navigator.serviceWorker.register("/sw.js");
+    // Register using a path relative to index.html so it works on GitHub Pages
+    // subpaths (e.g. /datasette-gh-pages/) as well as root deployments.
+    await navigator.serviceWorker.register(new URL("service-worker.js", location.href).href);
     await navigator.serviceWorker.ready;
 
-    const worker = new Worker("worker.js");
+    const worker = new Worker(new URL("datasette-loader.js", location.href).href);
 
     const ready = new Promise((resolve, reject) => {
       worker.onmessage = e => {

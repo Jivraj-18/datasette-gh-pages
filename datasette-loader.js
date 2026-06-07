@@ -1,22 +1,26 @@
-// worker.js — Pyodide Web Worker
-// This is the only file you edit to change app behaviour.
+// datasette-loader.js — runs inside a browser Web Worker (background thread).
+// Boots Datasette in Python/WASM (Pyodide) and handles every HTTP request
+// that the service worker intercepts from the page's iframe.
 //
-// Receives {type:"app-config", dbUrl, token} then {type:"init", port}
-// from index.html before handling any requests.
+// THIS IS THE ONLY FILE YOU NEED TO EDIT to change:
+//   - which database to load
+//   - which Datasette plugins to use
+//   - the AI model or system prompt
 
-importScripts("pyodide-runtime.js");
+importScripts("pyodide-boot.js");
 
-// ── Python: your Datasette app ────────────────────────────────────────────────
-const APP_PY = String.raw`
+// ── Python: start Datasette from a remote .db URL ─────────────────────────────
+const DATASETTE_PY = String.raw`
 import os
 from datasette.app import Datasette
 from js import fetch as jsfetch
 
-async def build_app(db_url, aipipe_token):
+async def start_datasette(db_url, aipipe_token):
+    # Point the openai library at aipipe.org (OpenAI-compatible proxy)
     os.environ["OPENAI_API_KEY"] = aipipe_token
     os.environ["OPENAI_BASE_URL"] = "https://aipipe.org/openai/v1"
 
-    # Pyodide compat: httpx streaming returns memoryview; coerce to bytes.
+    # Pyodide compat: httpx streaming returns memoryview chunks; coerce to bytes.
     import openai._streaming as _s
     _orig = _s.SSEDecoder.aiter_bytes
     async def _patched(self, it):
@@ -27,21 +31,26 @@ async def build_app(db_url, aipipe_token):
             yield sse
     _s.SSEDecoder.aiter_bytes = _patched
 
-    # Download the SQLite file into Pyodide's in-memory filesystem
+    # Download the SQLite file and write it to Pyodide's in-memory filesystem
     resp = await jsfetch(db_url)
     data = (await resp.arrayBuffer()).to_py().tobytes()
     with open("/tmp/data.db", "wb") as f:
         f.write(data)
+    print(f"[datasette] loaded {len(data):,} bytes from {db_url}")
 
     ds = Datasette(
         files=["/tmp/data.db"],
         settings={"base_url": "/", "num_sql_threads": 0},
         default_deny=False,
-        metadata={"plugins": {"datasette-llm": {"default_model": "gpt-4o-mini"}}},
+        metadata={
+            "plugins": {
+                "datasette-llm": {"default_model": "gpt-4o-mini"},
+            }
+        },
     )
     ds.root_enabled = True
 
-    # Skip permission checks — single-user browser session
+    # Single-user browser session — skip all permission checks
     from datasette.permissions import _skip_permission_checks
     raw = ds.app()
     async def app(scope, receive, send):
@@ -51,7 +60,7 @@ async def build_app(db_url, aipipe_token):
     return app
 `;
 
-// ── Python: bridge glue (connects ASGIBridge from bridge.py to the runtime) ──
+// ── Python: glue between Datasette and the ASGI bridge ────────────────────────
 const GLUE_PY = String.raw`
 import json
 from js import Object
@@ -61,7 +70,7 @@ bridge = None
 
 async def setup(db_url, aipipe_token):
     global bridge
-    app = await build_app(db_url, aipipe_token)
+    app = await start_datasette(db_url, aipipe_token)
     bridge = ASGIBridge(app, root_path="")
     await bridge.startup()
 
@@ -74,25 +83,26 @@ async def handle_request(method, path, query, headers_json, body_buf, scheme, ho
                  dict_converter=Object.fromEntries)
 `;
 
-// ── Config from index.html ─────────────────────────────────────────────────────
-// addEventListener stacks on top of the runtime's onmessage, so config arrives safely.
+// ── Receive config from index.html before the runtime's "init" message ─────────
 let _cfg = { dbUrl: "", token: "" };
 self.addEventListener("message", (e) => {
   if (e.data?.type === "app-config") _cfg = e.data;
 });
 
-// ── Start ──────────────────────────────────────────────────────────────────────
-startAsgiWorker({
+// ── Boot ───────────────────────────────────────────────────────────────────────
+startPyodideWorker({
   pyodideUrl: "https://cdn.jsdelivr.net/pyodide/v0.29.4/full/",
-  installManifest: "datasette.json",        // vendor/datasette.json — wheel list
+  wheelManifest: "vendor/datasette.json",   // list of wheels to install via micropip
   installingMessage: "installing-datasette",
-  loadPackages: [                            // Pyodide-bundled packages (no wheel needed)
+  // Packages already compiled into Pyodide — loaded natively, no wheel needed
+  builtinPackages: [
     "pluggy", "pyyaml", "sqlite3", "markupsafe", "pydantic", "pydantic_core",
     "packaging", "click", "jinja2", "httpx", "anyio", "sniffio", "certifi",
     "openai", "cryptography", "python-dateutil",
   ],
-  pythonFiles: [new URL("bridge.py", self.location.href).href],  // ASGI bridge
-  pythonSources: [APP_PY, GLUE_PY],
+  // .py files fetched and executed before the inline Python above
+  pythonFiles: [new URL("asgi-bridge.py", self.location.href).href],
+  pythonSources: [DATASETTE_PY, GLUE_PY],
   get pyGlobals() { return { _db_url: _cfg.dbUrl, _token: _cfg.token }; },
   setupExpr: "await setup(_db_url, _token)",
 });

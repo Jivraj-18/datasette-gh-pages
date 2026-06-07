@@ -1,69 +1,70 @@
-# datasette-pyodide-gh-pages
+# Datasette Agent on GitHub Pages
 
-Run [Datasette](https://datasette.io) + an AI agent **entirely in the browser** — no server, no Docker, free hosting on GitHub Pages.
+Run [Datasette](https://datasette.io) + an AI agent **entirely in the browser** — no server required. Hosted free on GitHub Pages.
 
-Uses [Pyodide](https://pyodide.org) (Python → WebAssembly) and a service worker to intercept HTTP requests. Point it at any public `.db` file and chat with it using [datasette-agent](https://github.com/datasette/datasette-agent) via [aipipe.org](https://aipipe.org).
+Point it at any public SQLite database and chat with it using natural language. Everything runs locally in the user's browser via [Pyodide](https://pyodide.org) (Python compiled to WebAssembly).
 
----
-
-## File structure
-
-```
-index.html          ← Login form. Starts the worker, registers the SW, brokers messages.
-sw.js               ← Service worker. Routes /-/* requests to Pyodide; static files pass through.
-worker.js           ← YOUR APP. Edit this to change Datasette config, plugins, system prompt.
-pyodide-runtime.js  ← Generic Pyodide loader. Loads packages, runs Python. Don't edit.
-bridge.py           ← ASGI ↔ fetch translation layer. Don't edit.
-vendor.py           ← Downloads Pyodide runtime + wheels into vendor/. Run once via setup.sh.
-setup.sh            ← One-shot setup: runs vendor.py + downloads plugin wheels.
-vendor/             ← Downloaded wheels + Pyodide runtime. Committed to repo. Gitignored by default.
-```
-
-**You only ever edit `worker.js`** — that's where Datasette is configured, plugins are listed, and the AI system prompt lives.
+**Live demo:** `https://<you>.github.io/datasette-gh-pages/`
 
 ---
 
 ## How it works
 
-```
-Browser tab (index.html)
-  │
-  ├── registers sw.js as service worker
-  ├── starts worker.js as a Web Worker (Pyodide boots here)
-  └── loads /-/agent in an iframe
-        │
-        └── every fetch (/-/*) is intercepted by sw.js
-              │
-              └── sw.js → index.html → worker.js → Datasette (Python/WASM) → response
-```
+The browser runs Python (via Pyodide/WASM) in a background thread. A service worker intercepts all Datasette HTTP requests and routes them to that Python thread instead of a real server.
 
-First load downloads ~20 MB (Pyodide + wheels). Cached after that.
+```
+index.html  (you open this)
+   │
+   ├── registers service-worker.js
+   │     └── intercepts all /-/* requests from the iframe
+   │
+   ├── starts datasette-loader.js in a background thread
+   │     ├── boots Python via Pyodide
+   │     ├── downloads your .db file
+   │     └── runs Datasette + datasette-agent inside Python
+   │
+   └── loads /-/agent in an iframe
+         └── every fetch → service worker → Python → response
+```
 
 ---
 
-## Deploy to GitHub Pages
+## Files
 
-### Prerequisites
+| File | Role | Edit? |
+|---|---|---|
+| `index.html` | Login form + browser bootstrap | Only to change defaults |
+| `service-worker.js` | Intercepts Datasette requests, routes to Python | No |
+| `datasette-loader.js` | Starts Datasette in Python/WASM | **Yes — your app config lives here** |
+| `pyodide-boot.js` | Generic Pyodide loader (not specific to Datasette) | No |
+| `asgi-bridge.py` | Translates browser fetches into Python ASGI calls | No |
+| `download-wheels.py` | Downloads Pyodide runtime + wheels into `vendor/` | No |
+| `setup.sh` | One-shot setup script | No |
+| `vendor/` | Downloaded wheels + Pyodide runtime (commit this) | No |
+
+**You only edit `datasette-loader.js`** to change the database, model, plugins, or system prompt.
+
+---
+
+## Deploy
+
+### 1. Prerequisites
 
 ```bash
-# Install uv (fast Python package manager)
-curl -LsSf https://astral.sh/uv/install.sh | sh
+curl -LsSf https://astral.sh/uv/install.sh | sh   # install uv
 ```
 
-### Step 1 — Clone
+### 2. Clone and download wheels
 
 ```bash
-git clone https://github.com/<you>/datasette-pyodide-gh-pages
-cd datasette-pyodide-gh-pages
-```
-
-### Step 2 — Download wheels into vendor/
-
-```bash
+git clone https://github.com/Jivraj-18/datasette-gh-pages
+cd datasette-gh-pages
 bash setup.sh
 ```
 
-### Step 3 — Commit and push
+This downloads the Pyodide runtime and all Python wheels into `vendor/` (~20 MB).
+
+### 3. Commit and push
 
 ```bash
 git add vendor/
@@ -71,56 +72,61 @@ git commit -m "add vendor wheels"
 git push
 ```
 
-### Step 4 — Enable GitHub Pages
+### 4. Enable GitHub Pages
 
-**Settings → Pages → Source → Deploy from branch → `main` / `(root)`**
+In your repo: **Settings → Pages → Source → Deploy from branch → `main` / `(root)`**
 
-Your site: `https://<you>.github.io/datasette-pyodide-gh-pages/`
+Your site goes live at `https://<you>.github.io/datasette-gh-pages/` in ~1 minute.
 
 ---
 
 ## Usage
 
-Open the URL and enter:
+Open the site and enter:
 
-- **SQLite database URL** — any public `.db` file (default: `https://datasette.io/content.db`)
-- **Aipipe token** — free token at [aipipe.org/login](https://aipipe.org/login) (Google sign-in)
+- **SQLite database URL** — any publicly accessible `.db` file
+- **Aipipe token** — free LLM proxy token from [aipipe.org/login](https://aipipe.org/login) (Google sign-in)
 
-The AI agent opens at `/-/agent`. Ask anything about the data.
+The AI agent opens at `/-/agent`. Ask questions about the data in plain English.
 
 ---
 
 ## Customise
 
-### Point to a different database
+### Change the default database
 
-Change the default URL in `index.html`:
+In `index.html`, update the `value` of the database URL input:
 ```html
 <input id="db-url" type="url" value="https://your-host.com/your-data.db">
 ```
 
-### Change the LLM model
+### Change the AI model
 
-In `worker.js`, find `"default_model": "gpt-4o-mini"` and change to any model on aipipe.org:
-`gpt-4o`, `gemini-2.0-flash`, `claude-3-5-haiku`, etc.
-
-### Add a custom system prompt
-
-In `worker.js`, add a `system_prompt_prefix` to the Datasette metadata:
+In `datasette-loader.js`, find `"default_model"` and change it to any model available on aipipe.org:
 ```python
-metadata={"plugins": {
-    "datasette-llm": {"default_model": "gpt-4o-mini"},
-    "datasette-agent": {"system_prompt_prefix": "You are an expert on this dataset..."},
-}}
+"datasette-llm": {"default_model": "gpt-4o"}   # or gemini-2.0-flash, claude-3-5-haiku, …
 ```
 
-### Bundle your own datasette plugin
+### Add a system prompt
+
+In `datasette-loader.js`, add to the metadata:
+```python
+"datasette-agent": {
+    "system_prompt_prefix": "You are an expert analyst. Always show your SQL queries."
+}
+```
+
+### Add a Datasette plugin
 
 ```bash
-uv build                                 # builds dist/your_plugin-*.whl
-cp dist/your_plugin-*.whl vendor/
+# Build your plugin wheel
+cd your-plugin && uv build
+
+# Copy to vendor/
+cp dist/your_plugin-*.whl ../datasette-gh-pages/vendor/
 
 # Re-index
+cd ../datasette-gh-pages
 uv run python3 -c "
 import json, pathlib
 wheels = sorted(f.name for f in pathlib.Path('vendor').glob('*.whl'))
@@ -133,5 +139,5 @@ git add vendor/ && git commit -m "add plugin" && git push
 
 ## Credits
 
-- Architecture: [Simon Willison — pyodide-asgi-browser](https://github.com/simonw/research/tree/main/pyodide-asgi-browser)
+- Architecture by [Simon Willison — pyodide-asgi-browser](https://github.com/simonw/research/tree/main/pyodide-asgi-browser)
 - [Datasette](https://datasette.io) · [datasette-agent](https://github.com/datasette/datasette-agent) · [Pyodide](https://pyodide.org) · [aipipe.org](https://aipipe.org)

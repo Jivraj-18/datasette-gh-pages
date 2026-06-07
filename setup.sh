@@ -13,7 +13,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "── Step 1: Pyodide runtime + core datasette wheels ──"
-uv run vendor.py
+uv run download-wheels.py
 
 echo "── Step 2: llm + datasette plugin wheels ──"
 uv pip download --only-binary :all: --no-deps --pre --dest vendor/ \
