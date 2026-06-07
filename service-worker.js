@@ -1,11 +1,10 @@
 // Service worker — routes Datasette/ASGI requests to the Pyodide Web Worker.
-// Static files (the shell page + JS assets) pass through to the network.
-// v3
+// v4
 
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", e => e.waitUntil(self.clients.claim()));
 
-// SW_BASE = directory containing this file, e.g. "/datasette-gh-pages/"
+// SW_BASE = path prefix for this deployment, e.g. "/datasette-gh-pages/"
 const SW_BASE = self.location.pathname.replace(/[^/]+$/, "");
 
 function isStatic(url) {
@@ -13,7 +12,6 @@ function isStatic(url) {
   if (p === SW_BASE || p === SW_BASE + "index.html") return true;
   if (p.startsWith(SW_BASE)) {
     const rest = p.slice(SW_BASE.length);
-    // Static: top-level files (js, css, py) and vendor/ folder
     if (!rest.includes("/") || rest.startsWith("vendor/")) return true;
   }
   return false;
@@ -44,25 +42,27 @@ async function handleRequest(request) {
   const body = hasBody ? await request.arrayBuffer() : null;
   const headers = [...request.headers.entries()];
 
+  // Strip SW_BASE so Datasette (configured with base_url="/") sees clean paths.
+  // e.g. /datasette-gh-pages/-/agent/123 → /-/agent/123
+  const stripped = new URL(request.url);
+  stripped.pathname = "/" + stripped.pathname.slice(SW_BASE.length);
+
   const channel = new MessageChannel();
   const reply = new Promise(resolve => { channel.port1.onmessage = e => resolve(e.data); });
-
-  // Pass the full URL as-is — Datasette is configured with base_url=SW_BASE
-  // so it expects and generates paths prefixed with SW_BASE.
   shell.postMessage(
-    { type: "asgi-request", request: { method: request.method, url: request.url, headers, body } },
+    { type: "asgi-request", request: { method: request.method, url: stripped.href, headers, body } },
     [channel.port2]
   );
 
   const timeout = new Promise((_, reject) =>
     setTimeout(() => reject(new Error("bridge timeout")), 300_000)
   );
-
   let msg;
   try { msg = await Promise.race([reply, timeout]); }
   catch (e) { return new Response("Bridge timeout: " + e.message, { status: 504 }); }
 
   const responseHeaders = new Headers();
+  let isHtml = false;
   for (const [k, v] of msg.headers) {
     if (k.toLowerCase() === "x-frame-options") continue;
     if (k.toLowerCase() === "content-security-policy") {
@@ -71,9 +71,23 @@ async function handleRequest(request) {
       if (filtered.length) responseHeaders.append(k, filtered.join("; "));
       continue;
     }
+    if (k.toLowerCase() === "content-type" && v.includes("text/html")) isHtml = true;
     responseHeaders.append(k, v);
   }
 
   const noBody = [204, 205, 304].includes(msg.status);
-  return new Response(noBody ? null : msg.body, { status: msg.status, headers: responseHeaders });
+  if (noBody) return new Response(null, { status: msg.status, headers: responseHeaders });
+
+  // Inject <base href> into HTML responses so all root-relative links (/-/static/...,
+  // /-/agent/...) resolve under SW_BASE, keeping them within the SW's scope.
+  if (isHtml && SW_BASE !== "/" && msg.body) {
+    const html = new TextDecoder().decode(msg.body);
+    const base = `<base href="${self.location.origin}${SW_BASE}">`;
+    const patched = html.replace("<head>", `<head>${base}`);
+    const encoded = new TextEncoder().encode(patched);
+    responseHeaders.set("content-length", String(encoded.length));
+    return new Response(encoded, { status: msg.status, headers: responseHeaders });
+  }
+
+  return new Response(msg.body, { status: msg.status, headers: responseHeaders });
 }
