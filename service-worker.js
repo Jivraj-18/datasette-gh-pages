@@ -62,7 +62,7 @@ async function handleRequest(request) {
   catch (e) { return new Response("Bridge timeout: " + e.message, { status: 504 }); }
 
   const responseHeaders = new Headers();
-  let isHtml = false;
+  let isText = false;
   for (const [k, v] of msg.headers) {
     if (k.toLowerCase() === "x-frame-options") continue;
     if (k.toLowerCase() === "content-security-policy") {
@@ -71,19 +71,24 @@ async function handleRequest(request) {
       if (filtered.length) responseHeaders.append(k, filtered.join("; "));
       continue;
     }
-    if (k.toLowerCase() === "content-type" && v.includes("text/html")) isHtml = true;
+    if (k.toLowerCase() === "content-type") {
+      // Rewrite HTML, JS, and CSS — all Datasette text responses can contain /-/ paths
+      if (v.includes("text/html") || v.includes("javascript") || v.includes("text/css")) {
+        isText = true;
+      }
+    }
     responseHeaders.append(k, v);
   }
 
   const noBody = [204, 205, 304].includes(msg.status);
   if (noBody) return new Response(null, { status: msg.status, headers: responseHeaders });
 
-  // Inject <base href> into HTML responses so all root-relative links (/-/static/...,
-  // /-/agent/...) resolve under SW_BASE, keeping them within the SW's scope.
-  if (isHtml && SW_BASE !== "/" && msg.body) {
-    const html = new TextDecoder().decode(msg.body);
-    const base = `<base href="${self.location.origin}${SW_BASE}">`;
-    const patched = html.replace("<head>", `<head>${base}`);
+  // Rewrite root-relative /-/ paths in text responses so Datasette's assets,
+  // API calls, and navigation all resolve under SW_BASE (the SW's scope).
+  // Datasette's entire surface lives under /-/ so this rewrite is safe and complete.
+  if (isText && SW_BASE !== "/" && msg.body) {
+    const text = new TextDecoder().decode(msg.body);
+    const patched = text.replaceAll('"/-/', `"${SW_BASE}-/`).replaceAll("'/-/", `'${SW_BASE}-/`);
     const encoded = new TextEncoder().encode(patched);
     responseHeaders.set("content-length", String(encoded.length));
     return new Response(encoded, { status: msg.status, headers: responseHeaders });
